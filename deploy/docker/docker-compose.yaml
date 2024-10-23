@@ -28,5 +28,6 @@ services:
     environment:
       - SERVER_ADDR=wow_server:8080
       - NAME=WORD_OF_WISDOM_CLIENT
+      - DIFFICULTY=3
     depends_on:
       - wow_server

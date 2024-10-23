@@ -16,8 +16,9 @@ var (
 	ErrWriteTimeout     = errors.New("write operation timeout")
 
 	// Challenge errors
-	ErrInvalidChallenge = errors.New("invalid challenge format")
-	ErrSolutionNotFound = errors.New("solution not found")
+	ErrInvalidChallenge     = errors.New("invalid challenge format")
+	ErrSolutionNotFound     = errors.New("solution not found")
+	ErrInvalidChallengeType = errors.New("invalid challenge type")
 
 	// System errors
 	ErrMaxRetriesExceeded = errors.New("maximum retry attempts exceeded")

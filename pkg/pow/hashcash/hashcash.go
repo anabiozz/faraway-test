@@ -66,23 +66,23 @@ var (
 )
 
 // ProofOfWork encapsulates a proof-of-work mechanism.
-type ProofOfWork struct {
+type HashCash struct {
 	difficultyLevel uint64
 }
 
-// NewProofOfWork initializes a ProofOfWork with a specified difficulty.
-func NewProofOfWork(difficulty uint64) (*ProofOfWork, error) {
+// NewHashCash initializes a ProofOfWork with a specified difficulty.
+func NewHashCash(difficulty uint64) (*HashCash, error) {
 	if difficulty < 1 || difficulty > maxDifficulty {
 		return nil, fmt.Errorf("%w: difficulty must be between 1 and %d", ErrDifficultyRange, maxDifficulty)
 	}
 
-	return &ProofOfWork{
+	return &HashCash{
 		difficultyLevel: difficulty,
 	}, nil
 }
 
 // GenerateChallenge creates a new challenge using cryptographically secure random numbers.
-func (pow *ProofOfWork) GenerateChallenge() ([]byte, error) {
+func (pow *HashCash) GenerateChallenge() ([]byte, error) {
 	bytes := make([]byte, tokenLength)
 	if _, err := rand.Read(bytes); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrGenerateRandom, err)
@@ -91,19 +91,25 @@ func (pow *ProofOfWork) GenerateChallenge() ([]byte, error) {
 }
 
 // Verify checks if the provided solution satisfies the challenge.
-func (pow *ProofOfWork) Verify(challengeBytes []byte, solutionBytes []byte) bool {
+func (pow *HashCash) Verify(challengeBytes []byte, solutionBytes []byte) bool {
 	hash := sha256.Sum256([]byte(string(challengeBytes) + string(solutionBytes)))
 	hashStr := hex.EncodeToString(hash[:])
+
+	// Debugging output
+	fmt.Printf("Challenge: %s\n", challengeBytes)
+	fmt.Printf("Solution: %s\n", string(solutionBytes))
+	fmt.Printf("Computed Hash: %s\n", hashStr)
+
 	return strings.HasPrefix(hashStr, strings.Repeat("0", int(pow.difficultyLevel)))
 }
 
-func (pow *ProofOfWork) GetDifficulty() uint64 {
+func (pow *HashCash) GetDifficulty() uint64 {
 	return pow.difficultyLevel
 }
 
 // FindSolution attempts to compute a valid solution for the challenge.
-func (pow *ProofOfWork) FindSolution(challenge []byte, difficulty uint64) string {
-	return computeSolution(challenge, difficulty)
+func (pow *HashCash) FindSolution(challenge []byte) string {
+	return computeSolution(challenge, pow.difficultyLevel)
 }
 
 // computeSolution iterates through possible nonces to find a valid solution for the challenge.

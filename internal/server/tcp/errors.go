@@ -17,8 +17,9 @@ var (
 	ErrWriteTimeout     = errors.New("write operation timeout")
 
 	// Challenge errors
-	ErrChallengeFailed   = errors.New("failed to generate challenge")
-	ErrChallengeDelivery = errors.New("failed to deliver challenge")
+	ErrChallengeFailed      = errors.New("failed to generate challenge")
+	ErrChallengeDelivery    = errors.New("failed to deliver challenge")
+	ErrInvalidChallengeType = errors.New("invalid challenge type")
 
 	// Solution errors
 	ErrSolutionFormat     = errors.New("invalid solution format")

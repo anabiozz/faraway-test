@@ -13,6 +13,7 @@ type ServerConfig struct {
 
 type ClientConfig struct {
 	Client
+	Pow
 }
 
 func LoadServerConfig() (*ServerConfig, error) {

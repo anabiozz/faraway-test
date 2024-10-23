@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log"
 	"log/slog"
 	"time"
 
@@ -21,6 +22,11 @@ func RunClient(ctx context.Context) error {
 	logger := slog.Default()
 	logger = logger.With("Service", cfg.Name)
 
+	solverUsecase, err := usecases.NewSolverUsecase(cfg.Difficulty)
+	if err != nil {
+		log.Fatal(ErrPowInit, err)
+	}
+
 	client := tcp.NewClient(
 		&tcp.Config{
 			ServerAddr:     cfg.ServerAddr,
@@ -31,7 +37,7 @@ func RunClient(ctx context.Context) error {
 			MaxMessageSize: 1024,
 			BufferSize:     1024,
 		},
-		usecases.NewSolverUsecase(),
+		solverUsecase,
 		logger,
 	)
 	if err := client.Start(ctx); err != nil {

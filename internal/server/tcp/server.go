@@ -5,11 +5,14 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"faraway/internal/domain"
 	"faraway/internal/usecases"
 	"fmt"
 	"net"
 	"strings"
 	"time"
+
+	"math/rand"
 )
 
 type Server struct {
@@ -129,13 +132,13 @@ func (s *Session) Handle() error {
 	}
 
 	// Step 2: Read solution
-	solution, err := s.readSolution()
+	challengeType, solution, err := s.readSolution()
 	if err != nil {
 		return fmt.Errorf("failed to read solution: %w", err)
 	}
 
 	// Step 3: Validate and respond
-	err = s.validateAndRespond(challenge, solution)
+	err = s.validateAndRespond(challengeType, challenge, solution)
 	if err != nil {
 		return fmt.Errorf("failed to validate and respond: %w", err)
 	}
@@ -144,14 +147,26 @@ func (s *Session) Handle() error {
 }
 
 func (s *Session) sendChallenge() ([]byte, error) {
-	pow, err := s.server.powUsecase.GenerateChallenge()
-	if err != nil {
-		return nil, NewConnectionError("sendChallenge", ErrChallengeFailed, "generation failed")
+	var challengeType string
+	var pow *domain.ProofOfWork
+	var err error
+
+	// Randomly decide between CPU-bound and memory-bound challenge
+	if shouldSendCPUBoundChallenge() {
+		challengeType = "CPU"
+		pow, err = s.server.powUsecase.GenerateCPUBoundChallenge()
+	} else {
+		challengeType = "Memory"
+		pow, err = s.server.powUsecase.GenerateMemoryBoundChallenge()
 	}
 
-	// Send challenge difficulty because we can increase the difficulty on demand (on demand not implemented yet)
-	if err := binary.Write(s.writer, binary.BigEndian, pow.Difficulty); err != nil {
-		return nil, NewConnectionError("sendChallenge", ErrChallengeDelivery, "write length failed")
+	if err != nil {
+		return nil, NewConnectionError("sendChallenge", ErrChallengeFailed, fmt.Sprintf("%s-bound challenge generation failed", challengeType))
+	}
+
+	// Send challenge type (1 byte for challenge type, e.g., 0 = CPU, 1 = Memory)
+	if err := s.sendChallengeType(challengeType); err != nil {
+		return nil, err
 	}
 
 	// Send challenge length
@@ -160,7 +175,7 @@ func (s *Session) sendChallenge() ([]byte, error) {
 		return nil, NewConnectionError("sendChallenge", ErrChallengeDelivery, "write length failed")
 	}
 
-	// Send challenge data
+	// Send challenge data (either CPU-bound or memory-bound challenge)
 	errCh := make(chan error, 1)
 	go func() {
 		_, err := s.writer.Write(pow.Challenge)
@@ -170,10 +185,12 @@ func (s *Session) sendChallenge() ([]byte, error) {
 		errCh <- err
 	}()
 
+	s.server.logger.Info("challenge sent", "type", challengeType, "difficulty", pow.Difficulty, "length", length)
+
 	select {
 	case err := <-errCh:
 		if err != nil {
-			return nil, NewConnectionError("sendChallenge", ErrChallengeDelivery, "write data failed")
+			return nil, NewConnectionError("sendChallenge", ErrChallengeDelivery, "write challenge data failed")
 		}
 	case <-s.context.Done():
 		return nil, NewConnectionError("sendChallenge", ErrWriteTimeout, "context deadline exceeded")
@@ -182,40 +199,96 @@ func (s *Session) sendChallenge() ([]byte, error) {
 	return pow.Challenge, nil
 }
 
-func (s *Session) readSolution() ([]byte, error) {
+// Helper function to determine which challenge to send
+func shouldSendCPUBoundChallenge() bool {
+	return rand.Intn(2) == 0
+}
+
+// Helper function to send the challenge type (as a single byte)
+func (s *Session) sendChallengeType(challengeType string) error {
+	var challengeByte byte
+	if challengeType == "CPU" {
+		challengeByte = 0x00
+	} else if challengeType == "Memory" {
+		challengeByte = 0x01
+	} else {
+		return NewConnectionError("sendChallenge", ErrChallengeDelivery, "unknown challenge type")
+	}
+
+	// Send challenge type
+	if err := s.writer.WriteByte(challengeByte); err != nil {
+		return NewConnectionError("sendChallenge", ErrChallengeDelivery, "write challenge type failed")
+	}
+	return nil
+}
+
+func (s *Session) readSolution() (string, []byte, error) {
+	// Channel for the results
 	resultCh := make(chan struct {
-		solution []byte
-		err      error
+		challengeType string
+		solution      []byte
+		err           error
 	}, 1)
 
 	go func() {
-		line, err := s.reader.ReadString('\n')
+		// Read challenge type
+		challengeTypeLine, err := s.reader.ReadString('\n')
 		if err != nil {
 			resultCh <- struct {
-				solution []byte
-				err      error
-			}{nil, NewConnectionError("readSolution", err, "read failed")}
+				challengeType string
+				solution      []byte
+				err           error
+			}{"", nil, NewConnectionError("readChallengeTypeAndSolution", err, "reading challenge type failed")}
 			return
 		}
 
-		solution, err := parseSolution(line)
+		// Parse the challenge type
+		challengeType := strings.TrimSpace(challengeTypeLine)
+
+		// Read solution
+		solutionLine, err := s.reader.ReadString('\n')
+		if err != nil {
+			resultCh <- struct {
+				challengeType string
+				solution      []byte
+				err           error
+			}{challengeType, nil, NewConnectionError("readChallengeTypeAndSolution", err, "reading solution failed")}
+			return
+		}
+
+		// Parse the solution
+		solution, err := parseSolution(solutionLine)
 		resultCh <- struct {
-			solution []byte
-			err      error
-		}{solution, err}
+			challengeType string
+			solution      []byte
+			err           error
+		}{challengeType, solution, err}
 	}()
 
 	select {
 	case result := <-resultCh:
-		return result.solution, result.err
+		return result.challengeType, result.solution, result.err
 	case <-s.context.Done():
-		return nil, NewConnectionError("readSolution", ErrReadTimeout, "context deadline exceeded")
+		return "", nil, NewConnectionError("readChallengeTypeAndSolution", ErrReadTimeout, "context deadline exceeded")
 	}
 }
 
-func (s *Session) validateAndRespond(challenge, solution []byte) error {
-	if !s.server.powUsecase.ValidateSolution(challenge, solution) {
-		return NewConnectionError("validateAndRespond", ErrInvalidSolution, "validation failed")
+func (s *Session) validateAndRespond(challengeType string, challenge, solution []byte) error {
+	switch challengeType {
+	case "CPU":
+		if !s.server.powUsecase.ValidateCPUBoundSolution(challenge, solution) {
+			return NewConnectionError("validateAndRespond", ErrInvalidSolution, "validation failed")
+		}
+	case "Memory":
+		isValidated, err := s.server.powUsecase.ValidateMemoryBoundSolution(challenge, solution)
+		if err != nil {
+			return NewConnectionError("validateAndRespond", err, "validation failed")
+		}
+		if !isValidated {
+			return NewConnectionError("validateAndRespond", ErrInvalidSolution, "validation failed")
+		}
+	default:
+		return NewConnectionError("validateAndRespond", ErrInvalidChallengeType, "unknown challenge type")
 	}
 
 	quote := s.server.quoteUsecase.GetRandomQuote()

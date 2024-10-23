@@ -1,24 +1,41 @@
 package usecases
 
 import (
+	"faraway/pkg/pow/argon2"
 	"faraway/pkg/pow/hashcash"
+	"fmt"
 )
 
-// SolverUsecase
 type SolverUsecase interface {
-	FindSolution(challenge []byte, difficulty uint64) string
+	FindCPUBoundSolution(challenge []byte) string
+	FindMemoryBoundSolution(challenge []byte) (string, error)
 }
 
 type solverUsecaseImpl struct {
-	pow *hashcash.ProofOfWork
+	hashcash *hashcash.HashCash
+	argon2   *argon2.Argon2
 }
 
 // NewSolverUsecase
-func NewSolverUsecase() SolverUsecase {
-	return &solverUsecaseImpl{}
+func NewSolverUsecase(difficulty uint64) (SolverUsecase, error) {
+	hashcash, err := hashcash.NewHashCash(difficulty)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize hashcash: %w", err)
+	}
+	argon2, err := argon2.NewArgon2(difficulty)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize argon2: %w", err)
+	}
+	return &solverUsecaseImpl{
+		hashcash: hashcash,
+		argon2:   argon2,
+	}, nil
 }
 
-// GenerateChallenge creates a new challenge using the hashcash package.
-func (s *solverUsecaseImpl) FindSolution(challenge []byte, difficulty uint64) string {
-	return s.pow.FindSolution(challenge, difficulty)
+func (s *solverUsecaseImpl) FindCPUBoundSolution(challenge []byte) string {
+	return s.hashcash.FindSolution(challenge)
+}
+
+func (s *solverUsecaseImpl) FindMemoryBoundSolution(challenge []byte) (string, error) {
+	return s.argon2.FindSolution(challenge)
 }

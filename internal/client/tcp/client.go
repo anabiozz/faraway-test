@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,11 +36,15 @@ type Logger interface {
 }
 
 type Challenge struct {
-	Difficulty uint64
-	Data       []byte
+	Data []byte
+	Type string
 }
 
-func NewClient(cfg *Config, solverUsecase usecases.SolverUsecase, logger Logger) *Client {
+func NewClient(
+	cfg *Config,
+	solverUsecase usecases.SolverUsecase,
+	logger Logger,
+) *Client {
 	return &Client{
 		cfg:           cfg,
 		solverUsecase: solverUsecase,
@@ -49,26 +54,37 @@ func NewClient(cfg *Config, solverUsecase usecases.SolverUsecase, logger Logger)
 
 func (c *Client) Start(ctx context.Context) error {
 	var lastErr error
-	for attempt := 0; attempt < c.cfg.RetryAttempts; attempt++ {
-		if attempt > 0 {
-			c.logger.Info("retrying connection",
-				"attempt", attempt+1,
-				"max_attempts", c.cfg.RetryAttempts)
-			time.Sleep(c.cfg.RetryDelay)
-		}
+	var wg sync.WaitGroup
+	const maxConnections = 10
 
-		if err := c.executeSession(ctx); err != nil {
-			lastErr = NewClientError("Start", err, "session failed")
-			c.logger.Error("session error",
-				"attempt", attempt+1,
-				"error", err)
-			continue
-		}
-		return nil
+	for attempt := 0; attempt < maxConnections; attempt++ {
+		time.Sleep(3 * time.Second)
+
+		wg.Add(1)
+		go func(attempt int) {
+			defer wg.Done()
+
+			if attempt > 0 {
+				c.logger.Info("retrying connection",
+					"attempt", attempt+1,
+					"max_attempts", maxConnections)
+				time.Sleep(c.cfg.RetryDelay)
+			}
+
+			if err := c.executeSession(ctx); err != nil {
+				lastErr = NewClientError("Start", err, "session failed")
+				c.logger.Error("session error",
+					"attempt", attempt+1,
+					"error", err)
+				return
+			}
+		}(attempt)
 	}
+
+	// Wait for all connection attempts to complete
+	wg.Wait()
 	return lastErr
 }
-
 func (c *Client) executeSession(ctx context.Context) error {
 	connectCtx, cancel := context.WithTimeout(ctx, c.cfg.ConnectTimeout)
 	defer cancel()
@@ -128,14 +144,18 @@ func (s *ClientSession) Execute() error {
 	}
 
 	// Step 3: Send solution and receive response
-	return s.sendSolutionAndGetResponse(solution)
+	return s.sendSolutionAndGetResponse(challenge.Type, solution)
 }
 
 func (s *ClientSession) receiveChallenge() (*Challenge, error) {
-	// Read difficulty
-	var difficulty uint64
-	if err := binary.Read(s.reader, binary.BigEndian, &difficulty); err != nil {
-		return nil, NewClientError("receiveChallenge", err, "reading difficulty failed")
+	// Read challenge type
+	var challengeType byte
+	if err := binary.Read(s.reader, binary.BigEndian, &challengeType); err != nil {
+		return nil, NewClientError("receiveChallenge", err, "reading challengeType failed")
+	}
+
+	if challengeType != 0x00 && challengeType != 0x01 {
+		return nil, NewClientError("receiveChallenge", ErrInvalidChallengeType, "invalid challenge type")
 	}
 
 	// Read challenge length
@@ -163,40 +183,72 @@ func (s *ClientSession) receiveChallenge() (*Challenge, error) {
 			"challenge size mismatch")
 	}
 
+	challengeTypeStr := ""
+	if challengeType == 0x00 {
+		challengeTypeStr = "CPU"
+	} else if challengeType == 0x01 {
+		challengeTypeStr = "Memory"
+	}
+
 	return &Challenge{
-		Difficulty: difficulty,
-		Data:       data,
+		Data: data,
+		Type: challengeTypeStr,
 	}, nil
 }
 
 func (s *ClientSession) solveChallenge(challenge *Challenge) (string, error) {
-	solution := s.client.solverUsecase.FindSolution(challenge.Data, challenge.Difficulty)
-	if solution == "" {
-		return "", NewClientError("solveChallenge", ErrSolutionNotFound, "no solution found")
+	if challenge.Type == "CPU" {
+		solution := s.client.solverUsecase.FindCPUBoundSolution(challenge.Data)
+		if solution == "" {
+			return "", NewClientError("solveChallenge", ErrSolutionNotFound, "no solution found for CPU-bound challenge")
+		}
+		return solution, nil
+	} else if challenge.Type == "Memory" {
+		solution, err := s.client.solverUsecase.FindMemoryBoundSolution(challenge.Data)
+		if err != nil {
+			return "", NewClientError("solveChallenge", err, "no solution found for Memory-bound challenge")
+		}
+		return solution, nil
+	} else {
+		return "", NewClientError("solveChallenge", ErrInvalidChallengeType, "invalid challenge type")
 	}
-
-	return solution, nil
 }
 
-func (s *ClientSession) sendSolutionAndGetResponse(solution string) error {
+func (s *ClientSession) sendSolutionAndGetResponse(challengeType, solution string) error {
 	errCh := make(chan error, 1)
+
 	go func() {
-		_, err := s.writer.WriteString(solution + "\n")
-		if err == nil {
-			err = s.writer.Flush()
+		// Send challenge type
+		if _, err := s.writer.WriteString(challengeType + "\n"); err != nil {
+			errCh <- NewClientError("sendChallengeTypeAndSolution", err, "sending challenge type failed")
+			return
 		}
-		errCh <- err
+
+		// Send solution
+		if _, err := s.writer.WriteString(solution + "\n"); err != nil {
+			errCh <- NewClientError("sendChallengeTypeAndSolution", err, "sending solution failed")
+			return
+		}
+
+		// Flush the writer
+		if err := s.writer.Flush(); err != nil {
+			errCh <- NewClientError("sendChallengeTypeAndSolution", err, "flush failed")
+			return
+		}
+
+		errCh <- nil
 	}()
 
 	select {
 	case err := <-errCh:
 		if err != nil {
-			return NewClientError("sendSolutionAndGetResponse", err, "sending solution failed")
+			return err
 		}
 	case <-s.context.Done():
-		return NewClientError("sendSolutionAndGetResponse", ErrWriteTimeout, "write timeout")
+		return NewClientError("sendChallengeTypeAndSolution", ErrWriteTimeout, "write timeout")
 	}
 
+	// Read the server response
 	responseCh := make(chan struct {
 		response string
 		err      error
@@ -213,11 +265,11 @@ func (s *ClientSession) sendSolutionAndGetResponse(solution string) error {
 	select {
 	case result := <-responseCh:
 		if result.err != nil {
-			return NewClientError("sendSolutionAndGetResponse", result.err, "reading response failed")
+			return NewClientError("sendChallengeTypeAndSolution", result.err, "reading response failed")
 		}
 		return s.handleResponse(strings.TrimSpace(result.response))
 	case <-s.context.Done():
-		return NewClientError("sendSolutionAndGetResponse", ErrReadTimeout, "read timeout")
+		return NewClientError("sendChallengeTypeAndSolution", ErrReadTimeout, "read timeout")
 	}
 }
 

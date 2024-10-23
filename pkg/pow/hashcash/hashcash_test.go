@@ -7,7 +7,7 @@ import (
 
 func TestNewProofOfWork(t *testing.T) {
 	// Valid difficulty test
-	pow, err := NewProofOfWork(5)
+	pow, err := NewHashCash(5)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -16,19 +16,19 @@ func TestNewProofOfWork(t *testing.T) {
 	}
 
 	// Invalid difficulty tests
-	_, err = NewProofOfWork(0)
+	_, err = NewHashCash(0)
 	if err == nil || !strings.Contains(err.Error(), ErrDifficultyRange.Error()) {
 		t.Fatalf("expected ErrDifficultyRange for difficulty 0, got %v", err)
 	}
 
-	_, err = NewProofOfWork(65)
+	_, err = NewHashCash(65)
 	if err == nil || !strings.Contains(err.Error(), ErrDifficultyRange.Error()) {
 		t.Fatalf("expected ErrDifficultyRange for difficulty 65, got %v", err)
 	}
 }
 
 func TestGenerateChallenge(t *testing.T) {
-	pow, err := NewProofOfWork(5)
+	pow, err := NewHashCash(5)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestGenerateChallenge(t *testing.T) {
 }
 
 func TestVerify(t *testing.T) {
-	pow, err := NewProofOfWork(2)
+	pow, err := NewHashCash(2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestVerify(t *testing.T) {
 	}
 
 	// Use FindSolution to compute a solution that meets the difficulty requirement
-	solution := pow.FindSolution(challenge, pow.GetDifficulty())
+	solution := pow.FindSolution(challenge)
 
 	// Verify if the solution is valid
 	if !pow.Verify(challenge, []byte(solution)) {
@@ -64,13 +64,13 @@ func TestVerify(t *testing.T) {
 }
 
 func TestFindSolution(t *testing.T) {
-	pow, err := NewProofOfWork(2)
+	pow, err := NewHashCash(2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	challenge := []byte("challenge")
-	solution := pow.FindSolution(challenge, pow.GetDifficulty())
+	solution := pow.FindSolution(challenge)
 
 	// Verify the solution
 	if !pow.Verify(challenge, []byte(solution)) {
@@ -79,13 +79,13 @@ func TestFindSolution(t *testing.T) {
 }
 
 func TestFindSolutionWithHigherDifficulty(t *testing.T) {
-	pow, err := NewProofOfWork(4)
+	pow, err := NewHashCash(4)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	challenge := []byte("challenge")
-	solution := pow.FindSolution(challenge, pow.GetDifficulty())
+	solution := pow.FindSolution(challenge)
 
 	// Verify the solution
 	if !pow.Verify(challenge, []byte(solution)) {
